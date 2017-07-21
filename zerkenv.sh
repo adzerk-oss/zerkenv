@@ -32,7 +32,12 @@ assert_has_command aws
 
 ################################################################################
 
-s3_bucket=${ZERKENV_BUCKET-zerkenv}
+s3_bucket="$ZERKENV_BUCKET"
+
+if [[ -z "$s3_bucket" ]]; then
+  errcho "Please set ZERKENV_BUCKET to the name of an S3 bucket."
+  return 0
+fi
 
 # Fetches modules from S3, as well as their dependency modules, and builds a
 # single script that is the concatenation of all of the module scripts.
