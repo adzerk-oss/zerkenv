@@ -7,10 +7,12 @@
 function errcho() {
   >&2 echo $@
 }
+export -f errcho
 
 function errcat() {
   >&2 cat $@
 }
+export -f errcat
 
 _mktemp() {
   case $(uname -s) in
@@ -20,6 +22,7 @@ _mktemp() {
        return 1 ;;
   esac
 }
+export -f _mktemp
 
 assert_has_command() {
   if [[ -z "$(which $1)" ]]; then
@@ -29,23 +32,22 @@ assert_has_command() {
 }
 
 assert_has_command aws
+assert_has_command parallel
 
 ################################################################################
 
-s3_bucket="$ZERKENV_BUCKET"
-
-if [[ -z "$s3_bucket" ]]; then
+if [[ -z "$ZERKENV_BUCKET" ]]; then
   errcho "Please set ZERKENV_BUCKET to the name of an S3 bucket."
   return 0
 fi
 
-# For each module in $1 (a file containing a list of module names, one per
-# line), adds the module to the set of loaded modules stored in the
+# For each module in $1 (a multiline string containing a list of module names,
+# one per line), adds the module to the set of loaded modules stored in the
 # ZERKENV_MODULES environment variable.
 function add_to_loaded_modules() {
   local modules="$1"
 
-  for module in $(cat "$modules"); do
+  while read module; do
     # Check to see if the module is already in the set.
     echo -e "$ZERKENV_MODULES" | grep -x "$module" >/dev/null
 
@@ -57,49 +59,70 @@ function add_to_loaded_modules() {
         export ZERKENV_MODULES=$(echo -e "$ZERKENV_MODULES\n$module")
       fi
     fi
-  done
+  done < <(echo -e "$modules")
 }
 
-# Fetches modules from S3, as well as their dependency modules, and builds a
-# single script that is the concatenation of all of the module scripts.
-#
-# $1: the file to which to append the script
-# $2: a comma-separated string of modules, e.g. foo,bar,baz
-# $3: a file containing the list of modules that have been sourced so far
-function build_script() {
-  local script="$1"
+# Given one module, fetches the module's dependency list from S3 and prints it
+# to STDOUT, one module per line.
+function resolve_deps() {
+  local module="$1"
+
+  local deps_file=$(_mktemp)
+  local s3_deps_file="s3://$ZERKENV_BUCKET/$module.deps"
+  aws s3 cp "$s3_deps_file" "$deps_file" >/dev/null 2>/dev/null
+
+  if [[ $? -eq 0 ]]; then
+    # Convert comma-separated list into an array.
+    local deps=""
+    IFS=',' deps=($(cat $deps_file))
+    # Convert array into a file.
+    local f=$(_mktemp)
+    for dep in "${deps[@]}"; do
+      echo "$dep" >> "$f"
+    done
+    cat "$f" | parallel -k resolve_deps
+  fi
+  errcho "- $module"
+  echo "$module"
+}
+export -f resolve_deps
+
+# Given a comma-separated string of modules, fetches the modules' dependency
+# lists from S3 and prints them to STDOUT, one module per line.
+function resolve_all_deps() {
+  errcho "Resolving module dependencies..."
+
   # Convert the comma-separated string (list of modules) into an array.
   local modules=""
-  IFS=',' modules=($2)
-  local sourced_modules="$3"
+  IFS=',' modules=($1)
 
+  # Convert the array into a multiline file.
+  local f=$(_mktemp)
   for m in "${modules[@]}"; do
-    local module="$m"
-    # If the module has any dependencies, source them first.
-    local deps_file=$(_mktemp)
-    local s3_deps_file="s3://$s3_bucket/$module.deps"
-    aws s3 cp "$s3_deps_file" "$deps_file" >/dev/null 2>/dev/null
-    if [[ $? -eq 0 ]]; then
-      build_script "$script" "$(cat $deps_file)" "$sourced_modules"
-    fi
-
-    # Source the module if it hasn't already been sourced.
-    grep -x "$module" "$sourced_modules" >/dev/null
-    if [[ $? -ne 0 ]]; then
-      # Download script from S3 into a temp file.
-      local s3_file="s3://$s3_bucket/$module.sh"
-      local file=$(_mktemp)
-
-      errcho "-- Downloading $s3_file..."
-      aws s3 cp "$s3_file" "$file" >&2
-
-      # Discard shebang lines and append to script.
-      grep -vhe '^#!' "$file" >> "$script"
-
-      # Note that the module has been sourced.
-      echo "$module" >> "$sourced_modules"
-    fi
+    echo "$m" >> "$f"
   done
+
+  cat "$f" | parallel -k resolve_deps | awk '!seen[$0]++'
+}
+
+# Fetches the script for a module from S3 and prints it to STDOUT, filtering out
+# any shebang lines.
+function script_for_module() {
+  local module="$1"
+
+  # Download script from S3 into a temp file.
+  local s3_file="s3://$ZERKENV_BUCKET/$module.sh"
+  local file=$(_mktemp)
+  aws s3 cp "$s3_file" "$file" >&2
+
+  # Discard shebang lines and append to script.
+  grep -vhe '^#!' "$file"
+}
+export -f script_for_module
+
+function build_script() {
+  errcho "Building script..."
+  cat | parallel -k script_for_module
 }
 
 # Given a comma-separated string representing a list of modules to source,
@@ -107,11 +130,11 @@ function build_script() {
 # including their dependency modules, and sources the script.
 function source_modules() {
   local modules="$1"
-  local script=$(_mktemp)
-  echo "#!/bin/sh" > "$script"
-  local sourced_modules=$(_mktemp)
+  local all_modules=$(resolve_all_deps "$modules")
+  errcho
 
-  build_script "$script" "$modules" "$sourced_modules"
+  local script=$(_mktemp)
+  (echo "#!/bin/sh"; echo -e "$all_modules" | build_script) > "$script"
 
   errcho
   errcho "-----"
@@ -124,7 +147,7 @@ function source_modules() {
   errcho
   read
 
-  add_to_loaded_modules "$sourced_modules"
+  add_to_loaded_modules "$all_modules"
   . "$script"
 }
 
@@ -132,10 +155,9 @@ function source_modules() {
 # its contents to STDOUT.
 function download_file() {
   local filename="$1"
-  local s3_file="s3://$s3_bucket/$filename"
+  local s3_file="s3://$ZERKENV_BUCKET/$filename"
   local file=$(_mktemp)
 
-  errcho "-- Downloading $s3_file..."
   aws s3 cp "$s3_file" "$file" >&2
 
   cat "$file"
@@ -148,11 +170,9 @@ function upload_file() {
   local filename="$1"
   local file=$(_mktemp)
   cat > $file
-  local s3_file="s3://$s3_bucket/$filename"
+  local s3_file="s3://$ZERKENV_BUCKET/$filename"
 
-  errcho "-- Uploading => $s3_file..."
   aws s3 cp "$file" "$s3_file" >&2
-  errcho "-- Done."
 
   return 0
 }

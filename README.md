@@ -5,6 +5,11 @@
 * Modules can depend on other modules, allowing one to set up _environments_
   composed of distinct modules.
 
+## Prerequisites
+
+* [`aws`](https://aws.amazon.com/cli/)
+* [`parallel`](https://www.gnu.org/software/parallel/)
+
 ## Setup
 
 By design, running a shell script cannot affect the shell in which the script
