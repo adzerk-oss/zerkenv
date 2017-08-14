@@ -73,6 +73,18 @@ $ zerkenv -d foo > foo.sh
 zerkenv -s foo,bar,baz
 ```
 
+### Seeing what modules have been sourced
+
+`zerkenv` keeps track of which modules you source and adds them to a multiline
+environment variable called `ZERKENV_MODULES`.
+
+```bash
+$ echo -e "$ZERKENV_MODULES"
+foo
+bar
+baz
+```
+
 ### Managing dependencies
 
 A `zerkenv` module consists of at least a `<module-name>.sh` file. This is an

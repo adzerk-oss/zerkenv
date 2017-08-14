@@ -39,6 +39,27 @@ if [[ -z "$s3_bucket" ]]; then
   return 0
 fi
 
+# For each module in $1 (a file containing a list of module names, one per
+# line), adds the module to the set of loaded modules stored in the
+# ZERKENV_MODULES environment variable.
+function add_to_loaded_modules() {
+  local modules="$1"
+
+  for module in $(cat "$modules"); do
+    # Check to see if the module is already in the set.
+    echo -e "$ZERKENV_MODULES" | grep -x "$module" >/dev/null
+
+    # If it isn't, add it.
+    if [[ $? -ne 0 ]]; then
+      if [[ -z "$ZERKENV_MODULES" ]]; then
+        export ZERKENV_MODULES="$module"
+      else
+        export ZERKENV_MODULES=$(echo -e "$ZERKENV_MODULES\n$module")
+      fi
+    fi
+  done
+}
+
 # Fetches modules from S3, as well as their dependency modules, and builds a
 # single script that is the concatenation of all of the module scripts.
 #
@@ -103,6 +124,7 @@ function source_modules() {
   errcho
   read
 
+  add_to_loaded_modules "$sourced_modules"
   . "$script"
 }
 
