@@ -39,7 +39,7 @@ So, to use `zerkenv`, set up an alias that sources `zerkenv.sh`:
 ```bash
 # bash
 function zerkenv() {
-  . /path/to/zerkenv.sh $@
+  . /path/to/zerkenv.sh "$@"
 }
 ```
 
