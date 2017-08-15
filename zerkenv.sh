@@ -72,15 +72,7 @@ function resolve_deps() {
   aws s3 cp "$s3_deps_file" "$deps_file" >/dev/null 2>/dev/null
 
   if [[ $? -eq 0 ]]; then
-    # Convert comma-separated list into an array.
-    local deps=""
-    IFS=',' deps=($(cat $deps_file))
-    # Convert array into a file.
-    local f=$(_mktemp)
-    for dep in "${deps[@]}"; do
-      echo "$dep" >> "$f"
-    done
-    parallel -a "$f" -k resolve_deps
+    parallel --no-run-if-empty -k -a "$deps_file" -d ',' resolve_deps
   fi
   errcho "- $module"
   echo "$module"
@@ -90,21 +82,14 @@ export -f resolve_deps
 # Given a comma-separated string of modules, fetches the modules' dependency
 # lists from S3 and prints them to STDOUT, one module per line.
 function resolve_all_deps() {
+  local modules="$1"
+
   errcho "Resolving module dependencies..."
-
-  # Convert the comma-separated string (list of modules) into an array.
-  local modules=""
-  IFS=',' modules=($1)
-
-  # Convert the array into a multiline file.
-  local f=$(_mktemp)
-  for m in "${modules[@]}"; do
-    echo "$m" >> "$f"
-  done
 
   # the awk voodoo here is like `uniq`, but still works when you have
   # non-consecutive matching lines
-  parallel -a "$f" -k resolve_deps | awk '!seen[$0]++'
+  parallel --no-run-if-empty -k -a <(echo -n "$modules") -d ',' resolve_deps \
+    | awk '!seen[$0]++'
 }
 
 # Fetches the script for a module from S3 and prints it to STDOUT, filtering out
@@ -124,7 +109,7 @@ export -f script_for_module
 
 function build_script() {
   errcho "Building script..."
-  parallel -a - -k script_for_module
+  parallel --no-run-if-empty -k -a - script_for_module
 }
 
 # Given a comma-separated string representing a list of modules to source,
