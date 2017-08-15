@@ -72,7 +72,7 @@ function resolve_deps() {
   aws s3 cp "$s3_deps_file" "$deps_file" >/dev/null 2>/dev/null
 
   if [[ $? -eq 0 ]]; then
-    parallel --no-run-if-empty -k -a "$deps_file" -d ',' resolve_deps
+    parallel -j0 --no-run-if-empty -k -a "$deps_file" -d ',' resolve_deps
   fi
   errcho "- $module"
   echo "$module"
@@ -88,7 +88,7 @@ function resolve_all_deps() {
 
   # the awk voodoo here is like `uniq`, but still works when you have
   # non-consecutive matching lines
-  parallel --no-run-if-empty -k -a <(echo -n "$modules") -d ',' resolve_deps \
+  parallel -j0 --no-run-if-empty -k -a <(echo -n "$modules") -d ',' resolve_deps \
     | awk '!seen[$0]++'
 }
 
@@ -109,7 +109,7 @@ export -f script_for_module
 
 function build_script() {
   errcho "Building script..."
-  parallel --no-run-if-empty -k -a - script_for_module
+  parallel -j0 --no-run-if-empty -k -a - script_for_module
 }
 
 # Given a comma-separated string representing a list of modules to source,
