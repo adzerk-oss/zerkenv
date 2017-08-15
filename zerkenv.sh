@@ -177,9 +177,17 @@ function upload_file() {
   return 0
 }
 
+function list_modules() {
+  aws s3 ls "s3://$ZERKENV_BUCKET" \
+    | sed 's/ \+/\t/g' \
+    | cut -f4 \
+    | sed 's/\(.*\).\(sh\|deps\)/\1/g' \
+    | uniq
+}
+
 ################################################################################
 
-usage="Usage: zerkenv [ -h|--help | -s|--source m1,m2,m3,... | -d|--download m1 | -u|--upload m1 ]"
+usage="Usage: zerkenv [ -h|--help | -l|--list | -s|--source m1,m2,m3,... | -d|--download m1 | -u|--upload m1 ]"
 
 # Have to null these out up here because we are sourcing the file and don't want
 # them to still have the value from the last time the file was sourced.
@@ -192,6 +200,9 @@ while [[ "$1" != "" ]]; do
        "--help" | "-h")
          echo "$usage"
          return 0
+         ;;
+       "--list" | "-l")
+         list_modules=yes
          ;;
        "--source" | "-s")
          shift
@@ -215,8 +226,9 @@ elif [[ -n "$download_file" ]]; then
   download_file "$download_file"
 elif [[ -n "$upload_file" ]]; then
   cat | upload_file "$upload_file"
+elif [[ "$list_modules" == "yes" ]]; then
+  list_modules
 else
   echo "$usage"
-  return 0
 fi
 

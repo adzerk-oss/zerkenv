@@ -72,10 +72,16 @@ $ cat foo.sh | zerkenv -u foo
 $ zerkenv -d foo > foo.sh
 ```
 
+### Listing available modules
+
+```bash
+$ zerkenv -l
+```
+
 ### Sourcing modules
 
 ```bash
-zerkenv -s foo,bar,baz
+$ zerkenv -s foo,bar,baz
 ```
 
 ### Seeing what modules have been sourced
