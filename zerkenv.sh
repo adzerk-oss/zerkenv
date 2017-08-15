@@ -80,7 +80,7 @@ function resolve_deps() {
     for dep in "${deps[@]}"; do
       echo "$dep" >> "$f"
     done
-    cat "$f" | parallel -k resolve_deps
+    parallel -a "$f" -k resolve_deps
   fi
   errcho "- $module"
   echo "$module"
@@ -104,7 +104,7 @@ function resolve_all_deps() {
 
   # the awk voodoo here is like `uniq`, but still works when you have
   # non-consecutive matching lines
-  cat "$f" | parallel -k resolve_deps | awk '!seen[$0]++'
+  parallel -a "$f" -k resolve_deps | awk '!seen[$0]++'
 }
 
 # Fetches the script for a module from S3 and prints it to STDOUT, filtering out
@@ -124,7 +124,7 @@ export -f script_for_module
 
 function build_script() {
   errcho "Building script..."
-  cat | parallel -k script_for_module
+  parallel -a - -k script_for_module
 }
 
 # Given a comma-separated string representing a list of modules to source,
@@ -147,7 +147,6 @@ function source_modules() {
     errcho "-----"
     errcho "Press ENTER to run this script, or ^C to cancel."
     errcho "-----"
-    errcho
     read
   fi
 
