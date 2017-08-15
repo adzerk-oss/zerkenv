@@ -63,13 +63,13 @@ storing and retrieving modules.
 ### Uploading a module
 
 ```bash
-$ cat foo.sh | zerkenv -u foo
+$ cat foo.sh | zerkenv -u foo.sh
 ```
 
 ### Downloading a module
 
 ```bash
-$ zerkenv -d foo > foo.sh
+$ zerkenv -d foo.sh > foo.sh
 ```
 
 ### Listing available modules
