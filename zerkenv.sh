@@ -102,6 +102,8 @@ function resolve_all_deps() {
     echo "$m" >> "$f"
   done
 
+  # the awk voodoo here is like `uniq`, but still works when you have
+  # non-consecutive matching lines
   cat "$f" | parallel -k resolve_deps | awk '!seen[$0]++'
 }
 
@@ -135,20 +137,27 @@ function source_modules() {
 
   local script=$(_mktemp)
   (echo "#!/bin/sh"; echo -e "$all_modules" | build_script) > "$script"
+  errcho
 
-  errcho
-  errcho "-----"
-  errcat "$script"
-  errcho "-----"
-  errcho
-  errcho "-----"
-  errcho "Press ENTER to run this script, or ^C to cancel."
-  errcho "-----"
-  errcho
-  read
+  if [[ "$skip_confirmation" != yes ]]; then
+    errcho "-----"
+    errcat "$script"
+    errcho "-----"
+    errcho
+    errcho "-----"
+    errcho "Press ENTER to run this script, or ^C to cancel."
+    errcho "-----"
+    errcho
+    read
+  fi
 
+  # add the names of the modules we're sourcing to ZERKENV_MODULES
   add_to_loaded_modules "$all_modules"
+
+  errcho "Sourcing script..."
   . "$script"
+
+  errcho "Done."
 }
 
 # Given a filename like `foo.sh` or `foo.deps`, downloads it from S3 and prints
@@ -187,10 +196,36 @@ function list_modules() {
 
 ################################################################################
 
-usage="Usage: zerkenv [ -h|--help | -l|--list | -s|--source m1,m2,m3,... | -d|--download m1 | -u|--upload m1 ]"
+usage=$(cat <<EOF
+usage: zerkenv [options/arguments ...]
+
+options:
+  -d, --download MODULE       download a module from S3
+  -h, --help                  show this help message and exit
+  -l, --list                  list available modules in S3 bucket
+  -s, --source M1,M2,M3,...   source modules
+  -u, --upload MODULE         upload a module to S3
+  -y, --yes                   skip confirmation (used with -s/--source)
+
+examples:
+  List modules available:
+    zerkenv -l
+
+  Source modules:
+    zerkenv -s foo,bar,baz
+
+  Download a module
+    zerkenv -d mod1 > mod1.sh
+
+  Upload a module
+    cat mod1.sh | zerkenv -u mod1.sh
+EOF
+)
 
 # Have to null these out up here because we are sourcing the file and don't want
 # them to still have the value from the last time the file was sourced.
+skip_confirmation=""
+list_modules=""
 source_modules=""
 download_file=""
 upload_file=""
@@ -200,6 +235,9 @@ while [[ "$1" != "" ]]; do
        "--help" | "-h")
          echo "$usage"
          return 0
+         ;;
+       "--yes" | "-y")
+         skip_confirmation=yes
          ;;
        "--list" | "-l")
          list_modules=yes
