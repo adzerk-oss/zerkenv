@@ -171,7 +171,7 @@ function upload_file() {
 }
 
 function list_modules() {
-  aws s3 ls "s3://$ZERKENV_BUCKET" \
+  aws s3 ls --recursive "s3://$ZERKENV_BUCKET" \
     | sed 's/ \+/\t/g' \
     | cut -f4 \
     | sed 's/\(.*\).\(sh\|deps\)/\1/g' \
