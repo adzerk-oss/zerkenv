@@ -43,16 +43,12 @@ So, to use `zerkenv`, set up an alias that sources `zerkenv.sh`:
 
 ```bash
 # bash
-function zerkenv() {
-  . /path/to/zerkenv.sh "$@"
-}
+alias zerkenv=". path/to/zerkenv.sh"
 ```
 
 ```fish
 # fish (requires bass: https://github.com/edc/bass)
-function zerkenv
-  bass . /path/to/zerkenv.sh $argv
-end
+alias zerkenv "bass . /path/to/zerkenv.sh"
 ```
 
 Then, set `ZERKENV_BUCKET` to the name of the S3 bucket that you want to use for
