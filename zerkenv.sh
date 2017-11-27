@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 
 # Sourcing this script in fish shell requires `bass`, which hides STDOUT until
 # after the process has completed. This is an interactive script, so we don't
