@@ -1,137 +1,233 @@
 # zerkenv
 
-* Simple CLI tool for managing shared environment variables via Amazon S3.
+Zerkenv is a simple CLI tool for managing environment variables.
+
 * Built around the idea of sets of environment variables, called _modules_.
-* Modules can depend on other modules, allowing one to set up _environments_
-  composed of distinct modules.
+* Modules can depend on other modules, allowing one to set up _environments_.
+* Modules can be shared &mdash; these are stored in S3 and cached in local files.
+* Modules can be private &mdash; these are only stored in local files.
+* Local module files are encrypted at all times &mdash; at rest and in flight.
 
-## Prerequisites
+## Install
 
-* [`aws`](https://aws.amazon.com/cli/)
-* [`parallel`](https://www.gnu.org/software/parallel/)
+First, make sure you have the following tools installed and configured:
 
-## Setup
+* [`aws`][aws] &mdash; protip: you can use `zerkenv` to manage AWS credentials!
+* [`gpg`][gpg] &mdash; you'll probably want to make sure `gpg-agent` is
+  configured correctly, too.
 
-By design, running a shell script cannot affect the shell in which the script
-was run. Any variables that are set (or even exported) will not be set in the
-shell environment after the script exits:
-
-```bash
-$ cat /tmp/myscript.sh
-#!/bin/sh
-
-export FOOB=42
-$ /tmp/myscript.sh
-$ echo $FOOB
-
-$
-```
-
-But in this case, that's exactly what we want to do!
-
-For a script to affect the environment of the shell running, the script has to
-be sourced:
+Then, download the [`zerkenv`][zerkenv] script to a directory in your `PATH`.
 
 ```bash
-$ . /tmp/myscript.sh
-$ echo $FOOB
-42
-$
+curl -fsSL https://raw.githubusercontent.com/adzerk-oss/zerkenv/master/zerkenv > ~/bin/zerkenv
+chmod 755 ~/bin/zerkenv
 ```
 
-So, to use `zerkenv`, set up an alias that sources `zerkenv.sh`:
+Finally, to configure `zerkenv` for your shell do the following (or skip to the
+section for your shell below):
+
+* Set the `ZERKENV_BUCKET` environment variable to your S3 bucket.
+* Optionally set the `ZERKENV_DIR` environment variable to your local cache dir.
+* Configure your shell to evaluate the output of `zerkenv -i <shell>` on
+  startup.
+
+#### Bash
+
+Add the following to your `~/.bashrc` file:
 
 ```bash
-# bash
-alias zerkenv=". path/to/zerkenv.sh"
+export ZERKENV_BUCKET=my-zerkenv-modules  # set this to your s3 bucket name
+export ZERKENV_DIR=$HOME/.config/zerkenv  # optional: default is ~/.zerkenv
+. <(zerkenv -i bash)
 ```
+
+#### Fish
+
+Zerkenv works with Fish shell provided that you have [`bass`] installed. This is
+necessary in order to source Bash scripts that set environment variables in the
+Bash subprocess, and have those changes reflected in the Fish shell.
+
+After installing [`bass`], add the following to your
+`~/.config/fish/config.fish` file:
 
 ```fish
-# fish (requires bass: https://github.com/edc/bass)
-alias zerkenv "bass . /path/to/zerkenv.sh"
+set -gx ZERKENV_BUCKET my-zerkenv-modules  # set this to your s3 bucket name
+set -gx ZERKENV_DIR $HOME/.config/zerkenv  # optional: default is ~/.zerkenv
+. (zerkenv -i fish | psub)
 ```
-
-Then, set `ZERKENV_BUCKET` to the name of the S3 bucket that you want to use for
-storing and retrieving modules.
 
 ## Usage
 
-### Uploading a module
+When correctly installed, you will have two new commands:
+
+* The `zerkenv` command is used to list, create, update, and delete modules.
+* The `zerkload` function is used to load modules into the current shell.
+
+Both of these will include tab-completion in your shell, and you can see the
+usage info for either with the `-h` option.
 
 ```bash
-$ cat foo.sh | zerkenv -u foo.sh
+# show usage info
+zerkenv -h
 ```
-
-### Downloading a module
 
 ```bash
-$ zerkenv -d foo.sh > foo.sh
+# show usage info
+zerkload -h
 ```
 
-### Listing available modules
+The first thing you can do is safely store your AWS credentials in a local
+encrypted file for use with `zerkenv`. To do this you will **create a local
+module** that is **private**, named `@aws-creds`:
 
 ```bash
-$ zerkenv -l
+# Create or replace the local '@aws-creds' module with content from stdin.
+# NOTE: Modules whose names start with '@' are PRIVATE modules -- zerkenv
+#       will refuse to up/download private modules to/from S3.
+cat <<EOT |zerkenv -w @aws-creds
+export AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE
+export AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+EOT
 ```
 
-### Sourcing modules
+Now you can **list the available modules** in the local cache:
 
 ```bash
-$ zerkenv -s foo,bar,baz
+# Print the names or avilable local modules, one per line.
+zerkenv -l
 ```
 
-### Seeing what modules have been sourced
-
-`zerkenv` keeps track of which modules you source and adds them to a multiline
-environment variable called `ZERKENV_MODULES`.
+And you can **print the module contents**:
 
 ```bash
-$ echo -e "$ZERKENV_MODULES"
-foo
-bar
-baz
+# Print the contents of the '@aws-creds' module on stdout.
+zerkenv @aws-creds
 ```
 
-### Managing dependencies
-
-A `zerkenv` module consists of at least a `<module-name>.sh` file. This is an
-`sh` script that will be sourced by `zerkenv` when the module is loaded.
-
-Optionally, a module can also include a `<module-name>.deps` file. This is a
-one-line file consisting of a comma-separated list of modules that are the
-dependencies of this module. For example, a `foobar` module might look like
-this:
-
-foobar.sh:
+You can **load the module** into your shell:
 
 ```bash
-#!/bin/sh
-
-export FOOBAR="$FOO $BAR"
+# Load the '@aws-creds' module into the current shell environment.
+zerkload @aws-creds
 ```
 
-foobar.deps:
-
-```
-foo,bar
-```
-
-This example module depends on two other modules, `foo` and `bar`:
-
-foo.sh:
+You will now see `@aws-creds` when you **list the currently loaded modules**:
 
 ```bash
-#!/bin/sh
-
-export FOO=42
+# Print a list of modules loaded into the current shell, one per line.
+zerkenv
 ```
 
-bar.sh:
+Now let's create a **shared** module. First create it locally, as above, but
+choose a name that does not begin with `@`:
 
 ```bash
-#!/bin/sh
+cat <<EOT |zerkenv -w wifi
+export WIFI_SSID=guest
+export WIFI_PASS=guest
+EOT
+```
 
-export BAR=43
+Then, you can **upload the module** from the local cache to S3:
+
+```bash
+# Upload the 'wifi' module to S3.
+zerkenv -W wifi
+```
+
+Now you will see it when you **list the available modules** in S3:
+
+```bash
+# List modules available in S3.
+zerkenv -r
+```
+
+If others have made changes and uploaded them you can **update the local cache**
+from S3:
+
+```bash
+# Update modules in local cache from S3.
+zerkenv -u
+```
+
+Finally, you can **delete the module** from the local cache:
+
+```bash
+# Delete the 'wifi' module from the local cache.
+zerkenv -x wifi
+```
+
+and from S3:
+
+```bash
+# Delete the 'wifi' module from S3.
+zerkenv -X wifi
+```
+
+## Modules
+
+Modules are snippets of bash to be evaluated in the current shell context
+by the `zerkload` function. A module normally exists to `export` environment
+variables, but you can have pretty much any valid bash statements in there.
+
+For example, a typical module:
+
+```bash
+export WIFI_SSID=guest
+export WIFI_PASS=guest
+```
+
+Note that modules are bash snippets, so they may contain references, etc:
+
+```bash
+export WIFI_SSID=guest
+export WIFI_PASS=guest
+export OTHER_WIFI_SSID=$WIFI_SSID
+export OTHER_WIFI_PASS=$WIFI_PASS
+```
+
+### Dependencies
+
+Modules may declare dependencies on other modules by setting a special
+variable named `ZERKENV_DEPENDENCIES`. When `zerkenv` loads module that
+declares dependencies into a shell it will also load the dependencies
+(in dependency order).
+
+For example:
+
+```bash
+ZERKENV_DEPENDENCIES="foo bar baz"
+export WIFI_SSID=guest
+export WIFI_PASS=guest
+```
+
+Modules may contain references to variables defined in dependencies, too:
+
+```bash
+ZERKENV_DEPENDENCIES="foo bar"
+export BAZ_USER=${FOO_USER:-foop} # use FOO_USER if set, otherwise 'foop'
+export BAZ_PASS=${FOO_PASS:-barp} # use FOO_PASS if set, otherwise 'barp'
+```
+
+> **Note:** Dependency order is meaningless when the dependency graph has
+> cycles. In this case a warning is printed to `stderr` showing the cyclic
+> dependencies and the order is chosen arbitrarily.
+
+### Non-Idempotent Actions
+
+Modules may contain arbitrary bash statements. However, the module will be
+evaluated twice &mdash; first in a subshell to resolve dependencies, then
+again in the current shell.
+
+You may wrap non-idempotent actions in a guard to prevent them from being
+evaluated during dependency resolution:
+
+```bash
+export FOO=bar
+# This prevents 'ssh-add' from being evaluated in the subshell:
+if [ -z "$ZERKENV_RESOLVING_DEPENDENCIES" ]; then
+  ssh-add ~/.ssh/foo.pem
+fi
 ```
 
 ## License
@@ -139,3 +235,8 @@ export BAR=43
 Copyright © 2017 Adzerk
 
 Distributed under the Eclipse Public License version 1.0.
+
+[aws]: https://aws.amazon.com/cli/
+[gpg]: https://www.gnupg.org/
+[zerkenv]: https://raw.githubusercontent.com/adzerk-oss/zerkenv/master/zerkenv
+[bass]: https://github.com/edc/bass
