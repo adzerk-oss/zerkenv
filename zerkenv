@@ -173,7 +173,7 @@ remove_remote() {
   local module file
   for module in "$@"; do
     file=$(remote_file $module)
-    if awk s3 rm "$file"; then
+    if aws s3 rm "$file"; then
       with_err info "* $module"
     else
       with_err warn "* $module not deleted"
