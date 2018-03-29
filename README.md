@@ -28,7 +28,8 @@ section for your shell below):
 
 * Set the `ZERKENV_BUCKET` environment variable to your S3 bucket.
 * Optionally set the `ZERKENV_DIR` environment variable to your local cache dir.
-* Configure your shell evaluate the output of `zerkenv -i <shell>` on startup.
+* Configure your shell to evaluate the output of `zerkenv -i <shell>` on
+  startup.
 
 #### Bash
 
@@ -42,7 +43,18 @@ export ZERKENV_DIR=$HOME/.config/zerkenv  # optional: default is ~/.zerkenv
 
 #### Fish
 
-Not sure what needs to go here...
+Zerkenv works with Fish shell provided that you have [`bass`] installed. This is
+necessary in order to source Bash scripts that set environment variables in the
+Bash subprocess, and have those changes reflected in the Fish shell.
+
+After installing [`bass`], add the following to your
+`~/.config/fish/config.fish` file:
+
+```fish
+set -gx ZERKENV_BUCKET my-zerkenv-modules  # set this to your s3 bucket name
+set -gx ZERKENV_DIR $HOME/.config/zerkenv  # optional: default is ~/.zerkenv
+. (zerkenv -i fish | psub)
+```
 
 ## Usage
 
@@ -227,3 +239,4 @@ Distributed under the Eclipse Public License version 1.0.
 [aws]: https://aws.amazon.com/cli/
 [gpg]: https://www.gnupg.org/
 [zerkenv]: https://raw.githubusercontent.com/adzerk-oss/zerkenv/master/zerkenv
+[bass]: https://github.com/edc/bass

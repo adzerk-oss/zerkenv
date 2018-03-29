@@ -238,9 +238,23 @@ complete -F _zerkload zerkload
 EOT
 }
 
+# TODO: implement completions in fish
+install_fish() {
+  cat <<'EOT'
+  function zerkload
+    if test (count $argv) -eq 0; or test $argv[1] = '-h'
+      echo "USAGE: zerkload [-h] <module> ..."
+    else
+      bass . (zerkenv -d $argv | psub)
+    end
+  end
+EOT
+}
+
 install() {
   case $1 in
     bash) install_bash ;;
+    fish) install_fish ;;
     *) abort unsupported shell: $1 ;;
   esac
 }
