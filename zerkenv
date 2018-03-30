@@ -1,35 +1,12 @@
 #!/bin/bash
 
-## global and environment variables ###########################################
-
-export ZERKENV_DIR=${ZERKENV_DIR:-$HOME/.zerkenv}
-export ZERKENV_COMPLETE=${ZERKENV_COMPLETE:-false}
-
-if [ -z "$ZERKENV_FAILS" ]; then
-  export ZERKENV_FAILS="$ZERKENV_DIR/$$.tmp"
-  mkdir -p "$(dirname "$ZERKENV_FAILS")"
-  touch "$ZERKENV_FAILS"
-  trap "rm -f '$ZERKENV_FAILS'" EXIT
-fi
-
-prog=$(basename "${BASH_SOURCE[0]}")
-opt_resolve_deps=false
-opt_update_cache=false
-opt_delete_cache=false
-opt_delete_s3=false
-
 ## helpers ####################################################################
 
 with_err()  { >&2 "$@" ; }
 abort()     { [ $# -gt 0 ] && with_err echo $prog: "$@"; exit 1; }
 info()      { echo -ne "\033[1m"; echo -n "$@"; echo -e "\033[0m"; }
 warn()      { echo -ne "\033[1;33m"; echo -n "$@"; echo -e "\033[0m"; }
-
-assert() {
-  local msg=$1
-  shift
-  if ! "$@" >/dev/null 2>&1; then abort "$msg"; fi
-}
+assert()    { local msg=$1; shift; if ! "$@" >/dev/null 2>&1; then abort "$msg"; fi; }
 
 export -f with_err abort assert
 
@@ -41,10 +18,181 @@ done
 
 assert "ZERKENV_BUCKET environment variable must be set" [ -n "$ZERKENV_BUCKET" ]
 
+## global and environment variables ###########################################
+
+export ZERKENV_DIR=${ZERKENV_DIR:-$HOME/.zerkenv} # The local cache directory.
+
+# Fetching of modules from S3 is done in batches in subshells, so it is not
+# convenient to try to pass failures back via exit status, and subshells can't
+# send information to the parent process via environment variables, so we re-
+# cord individual failures in this file, created by the parent process. Child
+# processes get the filename from the environment variable they inherit from
+# the parent and record individual S3 read failures in it. This prevents the
+# user from seeing multiple failed attempts to read modules from S3.
+if [ -z "$ZERKENV_FAILS" ]; then
+  mkdir -p "$ZERKENV_DIR"
+  assert "can't create local cache directory: $ZERKENV_DIR" [ -d "$ZERKENV_DIR" ]
+  export ZERKENV_FAILS="$ZERKENV_DIR/$$.tmp"
+  touch "$ZERKENV_FAILS"
+  trap "rm -f '$ZERKENV_FAILS'" EXIT
+fi
+
+prog=$(basename "${BASH_SOURCE[0]}")
+
+## command line option flags ##################################################
+
+opt_completions=false
+opt_resolve_deps=false
+opt_update_cache=false
+opt_delete_cache=false
+opt_delete_s3=false
+
+## module operations ##########################################################
+
+ls_s3() {
+  aws s3api list-objects --bucket $ZERKENV_BUCKET --output text \
+    |awk -F\\t '$1 == "CONTENTS" {print $3}' \
+    |grep '\.sh$' \
+    |sed 's@\.sh$@@' \
+    |sort
+}
+
+ls_cache() {
+  find "$ZERKENV_DIR" -type f -name '*.sh.asc' \
+    |sed "s@^$ZERKENV_DIR/@@" \
+    |sed 's@\.sh\.asc$@@'
+}
+
+ls_loaded()   { echo "$ZERKENV_MODULES" |grep . |sort -u ; }
+cache_file()  { echo "$ZERKENV_DIR/$1.sh.asc" ; }
+s3_file()     { echo "s3://$ZERKENV_BUCKET/$1.sh" ; }
+encrypt()     { gpg --batch -q -a -e --default-recipient $USER ; }
+decrypt()     { gpg --batch -q -d ; }
+not_private() { if ! [ ${1:0:1} = @ ]; then true; else false; fi ; }
+is_cached()   { [ -f "$(cache_file $1)" ] ; }
+
+put_cache() {
+  local file="$(cache_file $1)"
+  local src=$(cat)
+  if [ -n "$src" ]; then
+    mkdir -p "$(dirname "$file")"
+    echo "$src" |encrypt > $file
+  fi
+}
+
+get_cache() {
+  local file="$(cache_file $1)"
+  [ -f "$file" ] && cat "$file" |decrypt
+}
+
+get_s3() {
+  local src
+  if not_private $1; then
+    src=$(aws s3 cp "$(s3_file $1)" -)
+    if [ -n "$src" ]; then
+      echo "$src" |put_cache $1
+    else
+      echo $1 >> "$ZERKENV_FAILS"
+    fi
+  fi
+}
+
+put_s3() {
+  local file src
+  if not_private $1; then
+    src="$(get_cache $1)"
+    if [ -n "$src" ]; then
+      echo "$src" |aws s3 cp - "$(s3_file $1)" > /dev/null
+    else
+      with_err warn "* $1 not found"
+    fi
+  else
+    with_err warn "* $1 is private so cannot be uploaded to S3"
+    abort
+  fi
+}
+
+get_cache_or_s3() {
+  local i ff=$ZERKENV_FAILS
+  local failed=$(sort <(echo $1) <(cat "$ff" |sort -u) |uniq -d)
+  is_cached $1 || [ -n "$failed" ] || get_s3 $1
+  get_cache $1
+}
+
+update_cache() {
+  local module found modules="$@" local_modules=$(ls_cache) remote_modules=$(ls_s3)
+  if [ $# -eq 0 ]; then
+    modules=$(sort <(echo "$remote_modules") <(echo "$local_modules") |uniq -d)
+  fi
+  for module in $modules; do
+    found=$(sort <(echo "$module") <(echo "$remote_modules") |uniq -d)
+    if ! not_private $module; then
+      with_err warn "* $module is private so cannot be updated from S3"
+    elif [ -n "$found" ]; then
+      with_err info "* $module"
+      get_s3 $module
+    else
+      with_err warn "* $module not found"
+    fi
+  done
+}
+
+rm_cache() {
+  local module file
+  for module in "$@"; do
+    file=$(cache_file $module)
+    if [ -f "$file" ]; then
+      with_err info "* $module"
+      rm -f "$file"
+    else
+      with_err warn "* $module not found"
+    fi
+  done
+}
+
+rm_s3() {
+  local module file
+  for module in "$@"; do
+    file=$(s3_file $module)
+    if aws s3 rm "$file"; then
+      with_err info "* $module"
+    else
+      with_err warn "* $module not deleted"
+    fi
+  done
+}
+
+resolve_dependencies_impl() {
+  local deps module ZERKENV_DEPENDENCIES
+
+  for module in "$@"; do
+    . <(get_cache_or_s3 $module)
+    for dep in $module $ZERKENV_DEPENDENCIES; do
+      deps="$deps $dep $module"
+    done
+    ZERKENV_DEPENDENCIES=
+  done
+
+  echo "$deps" |tsort
+}
+
+resolve_dependencies() {
+  local i deps prev=$(for i in "$@"; do echo $i; done)
+
+  export ZERKENV_RESOLVING_DEPENDENCIES=true
+  while true; do
+    deps=$(resolve_dependencies_impl $prev)
+    [ "$deps" = "$prev" ] && break
+    prev=$deps
+  done
+  unset ZERKENV_RESOLVING_DEPENDENCIES
+
+  echo "$deps"
+}
+
 ## completion #################################################################
 
-if $ZERKENV_COMPLETE; then
-  export ZERKENV_COMPLETE=false
+completions() {
   if [ $# -lt 3 ]; then
     echo "-d -h -i -l -r -u -w -W -x -X $($0 -l)"
   elif [ $# -lt 4 ]; then
@@ -62,152 +210,6 @@ if $ZERKENV_COMPLETE; then
     esac
   fi
   exit
-fi
-
-## module operations ##########################################################
-
-list_remote() {
-  aws s3api list-objects --bucket $ZERKENV_BUCKET --output text \
-    |awk -F\\t '$1 == "CONTENTS" {print $3}' \
-    |grep '\.sh$' \
-    |sed 's@\.sh$@@' \
-    |sort
-}
-
-list_local() {
-  if [ -d "$ZERKENV_DIR" ]; then
-    find "$ZERKENV_DIR" -type f -name '*.sh.asc' \
-      |sed "s@^$ZERKENV_DIR/@@" \
-      |sed 's@\.sh\.asc$@@'
-  fi
-}
-
-list_loaded() { echo "$ZERKENV_MODULES" |grep . |sort -u ; }
-local_file()  { echo "$ZERKENV_DIR/$1.sh.asc" ; }
-remote_file() { echo "s3://$ZERKENV_BUCKET/$1.sh" ; }
-encrypt()     { gpg --batch -q -a -e --default-recipient $USER ; }
-decrypt()     { gpg --batch -q -d ; }
-not_private() { if ! [ ${1:0:1} = @ ]; then true; else false; fi ; }
-is_cached()   { [ -f "$(local_file $1)" ] ; }
-
-to_cache() {
-  local file="$(local_file $1)"
-  local src=$(cat)
-  if [ -n "$src" ]; then
-    mkdir -p "$(dirname "$file")"
-    echo "$src" |encrypt > $file
-  fi
-}
-
-from_cache() {
-  local file="$(local_file $1)"
-  [ -f "$file" ] && cat "$file" |decrypt
-}
-
-fetch_module() {
-  local src
-  if not_private $1; then
-    src=$(aws s3 cp "$(remote_file $1)" -)
-    if [ -n "$src" ]; then
-      echo "$src" |to_cache $1
-    else
-      echo $1 >> "$ZERKENV_FAILS"
-    fi
-  fi
-}
-
-put_module() {
-  local file src
-  if not_private $1; then
-    src="$(from_cache $1)"
-    if [ -n "$src" ]; then
-      echo "$src" |aws s3 cp - "$(remote_file $1)" > /dev/null
-    else
-      with_err warn "* $1 not found"
-    fi
-  else
-    with_err warn "* $1 is private so cannot be uploaded to S3"
-    abort
-  fi
-}
-
-from_cache_fetching() {
-  local i ff=$ZERKENV_FAILS
-  local failed=$(sort <(echo $1) <(cat "$ff" |sort -u) |uniq -d)
-  is_cached $1 || [ -n "$failed" ] || fetch_module $1
-  from_cache $1
-}
-
-update_cache() {
-  local module found modules="$@" local_modules=$(list_local) remote_modules=$(list_remote)
-  if [ $# -eq 0 ]; then
-    modules=$(sort <(echo "$remote_modules") <(echo "$local_modules") |uniq -d)
-  fi
-  for module in $modules; do
-    found=$(sort <(echo "$module") <(echo "$remote_modules") |uniq -d)
-    if ! not_private $module; then
-      with_err warn "* $module is private so cannot be updated from S3"
-    elif [ -n "$found" ]; then
-      with_err info "* $module"
-      fetch_module $module
-    else
-      with_err warn "* $module not found"
-    fi
-  done
-}
-
-remove_local() {
-  local module file
-  for module in "$@"; do
-    file=$(local_file $module)
-    if [ -f "$file" ]; then
-      with_err info "* $module"
-      rm -f "$file"
-    else
-      with_err warn "* $module not found"
-    fi
-  done
-}
-
-remove_remote() {
-  local module file
-  for module in "$@"; do
-    file=$(remote_file $module)
-    if aws s3 rm "$file"; then
-      with_err info "* $module"
-    else
-      with_err warn "* $module not deleted"
-    fi
-  done
-}
-
-_resolve_deps() {
-  local deps module ZERKENV_DEPENDENCIES
-
-  for module in "$@"; do
-    . <(from_cache_fetching $module)
-    for dep in $module $ZERKENV_DEPENDENCIES; do
-      deps="$deps $dep $module"
-    done
-    ZERKENV_DEPENDENCIES=
-  done
-
-  echo "$deps" |tsort
-}
-
-resolve_dependencies() {
-  local i deps prev=$(for i in "$@"; do echo $i; done)
-  export ZERKENV_RESOLVING_DEPENDENCIES=true
-
-  while true; do
-    deps=$(_resolve_deps $prev)
-    [ "$deps" = "$prev" ] && break
-    prev=$deps
-  done
-
-  ZERKENV_RESOLVING_DEPENDENCIES=
-
-  echo "$deps"
 }
 
 ## configuration hooks ########################################################
@@ -215,23 +217,29 @@ resolve_dependencies() {
 install_bash() {
   cat <<'EOT'
 zerkload() {
-  local OPTIND OPTARG o
-  while getopts "h" o; do
+  local OPTIND OPTARG o newshell=false
+  while getopts "hn" o; do
     case "${o}" in
-      h) echo "USAGE: zerkload [-h] <module> ..." ; return ;;
+      h) echo "USAGE: zerkload [-hn] <module>..." ; return ;;
+      n) newshell=true ;;
       ?) return 1 ;;
     esac
   done
   shift $((OPTIND-1))
-  if [ $# -gt 0 ]; then . <(zerkenv -d "$@"); fi
+  [ $# -eq 0 ] && return
+  if $newshell; then
+    eval "( zerkload $* ; exec $BASH )"
+  else
+    . <(zerkenv -d "$@")
+  fi
 }
 _zerkenv() {
   local cur=${COMP_WORDS[COMP_CWORD]}
-  local ses=$(ZERKENV_COMPLETE=true zerkenv "${COMP_WORDS[@]}")
+  local ses=$(zerkenv -c "${COMP_WORDS[@]}")
   COMPREPLY=( $(compgen -W "$ses" -- $cur) )
 }
 _zerkload() {
-  COMPREPLY=( $(compgen -W "$(zerkenv -l)" -- ${COMP_WORDS[COMP_CWORD]}) )
+  COMPREPLY=( $(compgen -W "-h -n $(zerkenv -l)" -- ${COMP_WORDS[COMP_CWORD]}) )
 }
 complete -F _zerkenv zerkenv
 complete -F _zerkload zerkload
@@ -263,92 +271,111 @@ install() {
 
 usage() {
   cat <<EOF
-USAGE:
+NAME
+      zerkenv - manage environment variables
 
-  $prog [-hlr]
-  $prog -i <shell>
-  $prog -w <module>
-  $prog -W <module>
-  $prog -u [<module> ...]
-  $prog [-dxX] <module> [<module> ...]
+SYNOPSIS
+      $prog [-hlr]
+      $prog -c [<arg>...]
+      $prog -i <shell>
+      $prog -w <module>
+      $prog -W <module>
+      $prog -u [<module>...]
+      $prog [-dxX] <module> [<module>...]
 
-OVERVIEW:
+DESCRIPTION
+      Without arguments lists currently loaded modules, one per line. With arg-
+      uments lists, uploads,  or fetches environment configuration modules from
+      the local repo specified in the ZERKENV_DIR environment variable (default
+      location ~/.zerkenv) or the S3 bucket specified in the ZERKENV_BUCKET en-
+      vironment variable.  Downloaded  modules are cached in the local repo and
+      written to stdout, suitable for evaluation in a shell.
 
-  Without arguments lists currently loaded modules, one per line. With argu-
-  ments lists, uploads, or fetches environment configuration modules from the
-  local repo specified in the ZERKENV_DIR environment variable (with default
-  location ~/.zerkenv) or the S3 bucket specified in the ZERKENV_BUCKET envi-
-  ronment variable. Downloaded modules are cached in the local repo and writ-
-  ten to stdout, suitable for evaluation in a shell.
+      There are two types of modules:
+        - Shared    These modules may be stored in S3.
+        - Private   These modules will only be stored in the local cache.
 
-  There are two types of modules:
-  - Shared      These modules may be stored in S3.
-  - Private     These modules will not be uploaded to or downloaded from S3.
+      Private module names start with the '@' character.
 
-  Private module names start with the '@' character.
+OPTIONS
+      -c <arg>...
+            Print completion words (used for shell tab-completion).
 
-OPTIONS:
+      -d <module>...
+            Print contents of <module>s, resolving dependencies.
 
-  -d              Resolve dependencies.
-  -h              Show this help message and exit.
-  -i <shell>      Print startup snippet suitable for <shell> rc file.
-  -l              List modules available in the local cache directory.
-  -r              List modules available in S3.
-  -u              Fetch modules from S3 and add to local cache directory.
-  -w <module>     Read source from stdin and write to local <module>.
-  -W <module>     Upload <module> from the local repo to S3.
-  -x <module>...  Delete <module>s from local repo.
-  -X <module>...  Delete <module>s from S3.
+      -h    Show this help message and exit.
 
-MODULES:
+      -i <shell>
+            Print startup snippet suitable for <shell> rc file.
 
-  Modules are bash snippets. The special ZERKENV_DEPENDENCIES variable may be
-  used to declare a dependency on another module, by name. Modules are loaded
-  into the shell in dependency order so modules may refer to variables set in 
-  the modules on which they depend. Additionally, the special environment var-
-  iable ZERKENV_RESOLVING_DEPENDENCIES will be set during the dependency reso-
-  lution phase, and may be used as a guard to prevent some sections from being
-  evaluated during this phase.
+      -l    List modules available in the local cache directory.
 
-EXAMPLES:
+      -r    List modules available in S3.
 
-  List modules loaded in the current shell environment:
-    $ $prog
+      -u [<module>...]
+            Update <modules>s (or all) in local cache.
 
-  List modules available in the local cache:
-    $ $prog -l
+      -w <module>
+            Read source from stdin and write to local <module>.
 
-  List modules available in S3:
-    $ $prog -r
+      -W <module>
+            Upload <module> from the local repo to S3.
 
-  Print the contents of modules foo, bar, and baz, without dependencies:
-    $ $prog foo bar baz
+      -x <module>...
+            Delete <module>s from local repo.
 
-  Print the contents of modules foo, bar, baz, plus their dependencies:
-    $ $prog -d foo bar baz
+      -X <module>...
+            Delete <module>s from S3.
 
-  Load modules foo, bar, and baz into current shell (bash):
-    $ . <($prog -d foo bar baz)
+MODULES
+      Modules are bash snippets.  The special ZERKENV_DEPENDENCIES variable may
+      be used to declare dependencies on other modules (by name).  Modules  are
+      loaded in dependency order so modules may refer to variables that are set
+      in the modules on which they  depend.  Additionally, the special environ-
+      variable ZERKENV_RESOLVING_DEPENDENCIES will be set during the dependency
+      resolution phase, and may be used as a guard to prevent sections from be-
+      ing evaluated during this phase.
 
-  Write module to local cache as mod1, depending on modules dep1 and dep2:
-    $ cat <<EOT | $prog -w mod1
-    - ZERKENV_DEPENDENCIES="dep1 dep2"
-    - export USERNAME=admin
-    - export PASSWORD=hunter2
-    - EOT
+EXAMPLES
+      $ # List modules loaded in the current shell environment:
+      $ $prog
+
+      $ # List modules available in the local cache:
+      $ $prog -l
+
+      $ # List modules available in S3:
+      $ $prog -r
+
+      $ # Print the contents of modules foo, bar, and baz, without dependencies:
+      $ $prog foo bar baz
+
+      $ # Print the contents of modules foo, bar, baz, plus their dependencies:
+      $ $prog -d foo bar baz
+
+      $ # Load modules foo, bar, and baz into current shell (bash):
+      $ . <($prog -d foo bar baz)
+
+      $ # Write module to local cache as mod1, depending on modules dep1 and dep2:
+      $ cat <<EOT | $prog -w mod1
+      - ZERKENV_DEPENDENCIES="dep1 dep2"
+      - export USERNAME=admin
+      - export PASSWORD=hunter2
+      - EOT
 EOF
 }
 
-while getopts "dhi:lruw:W:xX" o; do
+while getopts "cdhi:lruw:W:xX" o; do
   case "${o}" in
+    c) opt_completions=true ; break ;;
     d) opt_resolve_deps=true ; break ;;
     h) usage ; exit ;;
     i) install $OPTARG; exit $? ;;
-    l) list_local ; exit $? ;;
-    r) list_remote ; exit $? ;;
+    l) ls_cache ; exit $? ;;
+    r) ls_s3 ; exit $? ;;
     u) opt_update_cache=true ; break ;;
-    w) to_cache $OPTARG ; exit $? ;;
-    W) put_module $OPTARG ; exit $? ;;
+    w) put_cache $OPTARG ; exit $? ;;
+    W) put_s3 $OPTARG ; exit $? ;;
     x) opt_delete_cache=true ; break ;;
     X) opt_delete_s3=true ; break ;;
     ?) exit 1 ;;
@@ -356,18 +383,19 @@ while getopts "dhi:lruw:W:xX" o; do
 done
 shift $((OPTIND-1))
 
-if $opt_update_cache; then
+if $opt_completions; then
+  completions "$@"
+elif $opt_update_cache; then
   update_cache "$@"
 elif $opt_delete_cache; then
   assert "module name required" [ $# -gt 0 ]
-  remove_local "$@"
+  rm_cache "$@"
 elif $opt_delete_s3; then
   assert "module name required" [ $# -gt 0 ]
-  remove_remote "$@"
+  rm_s3 "$@"
 elif ! $opt_resolve_deps && [ $# -eq 0 ]; then
-  list_loaded
-else
-  assert "module name required" [ $# -gt 0 ]
+  ls_loaded
+elif [ $# -gt 0 ]; then
   modules=$(for i in "$@"; do echo $i; done |sort -u)
 
   if $opt_resolve_deps; then
@@ -376,7 +404,7 @@ else
 
   if [ -n "$modules" ]; then
     for module in $modules; do
-      src=$(from_cache_fetching $module)
+      src=$(get_cache_or_s3 $module)
       if [ -n "$src" ]; then
         with_err info "* $module"
         echo "$src"

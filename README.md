@@ -107,6 +107,11 @@ zerkenv @aws-creds
 You can **load the module** into your shell:
 
 ```bash
+# Load the '@aws-creds' module into a new subshell.
+zerkload -n @aws-creds
+```
+
+```bash
 # Load the '@aws-creds' module into the current shell environment.
 zerkload @aws-creds
 ```
