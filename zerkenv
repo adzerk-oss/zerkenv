@@ -2,21 +2,35 @@
 
 ## helpers ####################################################################
 
-with_err()  { >&2 "$@" ; }
-abort()     { [ $# -gt 0 ] && with_err echo $prog: "$@"; exit 1; }
-info()      { echo -ne "\033[1m"; echo -n "$@"; echo -e "\033[0m"; }
-warn()      { echo -ne "\033[1;33m"; echo -n "$@"; echo -e "\033[0m"; }
-assert()    { local msg=$1; shift; if ! "$@" >/dev/null 2>&1; then abort "$msg"; fi; }
+# Save the name of this script, so it can refer to itself correctly even if the
+# user renamed it to something else when they installed it.
+export prog=$(basename "${BASH_SOURCE[0]}")
 
-export -f with_err abort assert
+with_err()    { >&2 "$@" ; }
+abort()       { [ $# -gt 0 ] && with_err echo ${BASH_SOURCE[0]}: "$@"; exit 1; }
+assert()      { local msg=$1; shift; if ! "$@" >/dev/null 2>&1; then abort "$msg"; fi; }
+assert_var()  { assert "$1 environment variable must be set" [ -n "${!1}" ]; }
+
+with_rst()    { "$@"; echo -ne "\033[0m"; }
+with_col()    { echo -ne "\033[${1}m"; shift; "$@"; }
+
+with_bold()   { with_col 1 with_rst "$@"; }
+with_ul()     { with_col 4 with_rst "$@"; }
+with_yellow() { with_col 33 with_rst "$@"; }
+
+b()           { with_bold echo -n "$@"; }
+i()           { with_ul echo -n "$@"; }
+
+info()        { with_bold echo "$@"; }
+warn()        { with_bold with_yellow echo "$@"; }
+
+export -f with_err abort assert assert_var
 
 ## assertions #################################################################
 
 for i in aws gpg; do
   assert "required tool '$i' not found on PATH" which $i
 done
-
-assert "ZERKENV_BUCKET environment variable must be set" [ -n "$ZERKENV_BUCKET" ]
 
 ## global and environment variables ###########################################
 
@@ -37,8 +51,6 @@ if [ -z "$ZERKENV_FAILS" ]; then
   trap "rm -f '$ZERKENV_FAILS'" EXIT
 fi
 
-prog=$(basename "${BASH_SOURCE[0]}")
-
 ## command line option flags ##################################################
 
 opt_completions=false
@@ -50,6 +62,7 @@ opt_delete_s3=false
 ## module operations ##########################################################
 
 ls_s3() {
+  assert_var ZERKENV_BUCKET
   aws s3api list-objects --bucket $ZERKENV_BUCKET --output text \
     |awk -F\\t '$1 == "CONTENTS" {print $3}' \
     |grep '\.sh$' \
@@ -65,7 +78,7 @@ ls_cache() {
 
 ls_loaded()   { echo "$ZERKENV_MODULES" |grep . |sort -u ; }
 cache_file()  { echo "$ZERKENV_DIR/$1.sh.asc" ; }
-s3_file()     { echo "s3://$ZERKENV_BUCKET/$1.sh" ; }
+s3_file()     { assert_var ZERKENV_BUCKET ; echo "s3://$ZERKENV_BUCKET/$1.sh" ; }
 encrypt()     { gpg --batch -q -a -e --default-recipient $USER ; }
 decrypt()     { gpg --batch -q -d ; }
 not_private() { if ! [ ${1:0:1} = @ ]; then true; else false; fi ; }
@@ -87,6 +100,7 @@ get_cache() {
 
 get_s3() {
   local src
+  assert_var ZERKENV_BUCKET
   if not_private $1; then
     src=$(aws s3 cp "$(s3_file $1)" -)
     if [ -n "$src" ]; then
@@ -99,6 +113,7 @@ get_s3() {
 
 put_s3() {
   local file src
+  assert_var ZERKENV_BUCKET
   if not_private $1; then
     src="$(get_cache $1)"
     if [ -n "$src" ]; then
@@ -120,7 +135,9 @@ get_cache_or_s3() {
 }
 
 update_cache() {
-  local module found modules="$@" local_modules=$(ls_cache) remote_modules=$(ls_s3)
+  local module found modules="$@" local_modules=$(ls_cache) remote_modules
+  assert_var ZERKENV_BUCKET
+  remote_modules=$(ls_s3)
   if [ $# -eq 0 ]; then
     modules=$(sort <(echo "$remote_modules") <(echo "$local_modules") |uniq -d)
   fi
@@ -152,6 +169,7 @@ rm_cache() {
 
 rm_s3() {
   local module file
+  assert_var ZERKENV_BUCKET
   for module in "$@"; do
     file=$(s3_file $module)
     if aws s3 rm "$file"; then
@@ -215,7 +233,7 @@ completions() {
 ## configuration hooks ########################################################
 
 install_bash() {
-  cat <<'EOT'
+  cat <<'EOT' |envsubst '$prog'
 zerkload() {
   local OPTIND OPTARG o newshell=false
   while getopts "hn" o; do
@@ -230,18 +248,18 @@ zerkload() {
   if $newshell; then
     eval "( zerkload $* ; exec $BASH )"
   else
-    . <(zerkenv -d "$@")
+    . <($prog -d "$@")
   fi
 }
 _zerkenv() {
   local cur=${COMP_WORDS[COMP_CWORD]}
-  local ses=$(zerkenv -c "${COMP_WORDS[@]}")
+  local ses=$($prog -c "${COMP_WORDS[@]}")
   COMPREPLY=( $(compgen -W "$ses" -- $cur) )
 }
 _zerkload() {
-  COMPREPLY=( $(compgen -W "-h -n $(zerkenv -l)" -- ${COMP_WORDS[COMP_CWORD]}) )
+  COMPREPLY=( $(compgen -W "-h -n $($prog -l)" -- ${COMP_WORDS[COMP_CWORD]}) )
 }
-complete -F _zerkenv zerkenv
+complete -F _zerkenv $prog
 complete -F _zerkload zerkload
 EOT
 }
@@ -271,97 +289,97 @@ install() {
 
 usage() {
   cat <<EOF
-NAME
+$(b NAME)
       zerkenv - manage environment variables
 
-SYNOPSIS
-      $prog [-hlr]
-      $prog -c [<arg>...]
-      $prog -i <shell>
-      $prog -w <module>
-      $prog -W <module>
-      $prog -u [<module>...]
-      $prog [-dxX] <module> [<module>...]
+$(b SYNOPSIS)
+      $(b $prog) [$(b -hlr)]
+      $(b $prog -c) [$(i arg)...]
+      $(b $prog -i) $(i shell)
+      $(b $prog -w) $(i module)
+      $(b $prog -W) $(i module)
+      $(b $prog -u) [$(i module)...]
+      $(b $prog ) [$(b -dxX)] $(i module) [$(i module)...]
 
-DESCRIPTION
+$(b DESCRIPTION)
       Without arguments lists currently loaded modules, one per line. With arg-
       uments lists, uploads,  or fetches environment configuration modules from
-      the local repo specified in the ZERKENV_DIR environment variable (default
-      location ~/.zerkenv) or the S3 bucket specified in the ZERKENV_BUCKET en-
+      the local repo specified in the $(b ZERKENV_DIR) environment variable (default
+      location ~/.zerkenv) or the S3 bucket specified in the $(b ZERKENV_BUCKET) en-
       vironment variable.  Downloaded  modules are cached in the local repo and
       written to stdout, suitable for evaluation in a shell.
 
       There are two types of modules:
-        - Shared    These modules may be stored in S3.
-        - Private   These modules will only be stored in the local cache.
+        · $(b Shared)    These modules may be stored in S3.
+        · $(b Private)   These modules will only be stored in the local cache.
 
-      Private module names start with the '@' character.
+      Private module names start with the $(b @) character.
 
-OPTIONS
-      -c <arg>...
+$(b OPTIONS)
+      $(b -c) $(i arg)...
             Print completion words (used for shell tab-completion).
 
-      -d <module>...
-            Print contents of <module>s, resolving dependencies.
+      $(b -d) $(i module)...
+            Print contents of $(i module)s, resolving dependencies.
 
-      -h    Show this help message and exit.
+      $(b -h)    Show this help message and exit.
 
-      -i <shell>
-            Print startup snippet suitable for <shell> rc file.
+      $(b -i bash), $(b -i fish)
+            Print startup snippet suitable for shell rc file.
 
-      -l    List modules available in the local cache directory.
+      $(b -l)    List modules available in the local cache directory.
 
-      -r    List modules available in S3.
+      $(b -r)    List modules available in S3.
 
-      -u [<module>...]
-            Update <modules>s (or all) in local cache.
+      $(b -u) [$(i module)...]
+            Update $(i module)s (or all) in local cache.
 
-      -w <module>
+      $(b -w) $(i module)
             Read source from stdin and write to local <module>.
 
-      -W <module>
-            Upload <module> from the local repo to S3.
+      $(b -W) $(i module)
+            Upload $(i module) from the local repo to S3.
 
-      -x <module>...
-            Delete <module>s from local repo.
+      $(b -x) $(i module)...
+            Delete $(i module)s from local repo.
 
-      -X <module>...
-            Delete <module>s from S3.
+      $(b -X) $(i module)...
+            Delete $(i module)s from S3.
 
-MODULES
-      Modules are bash snippets.  The special ZERKENV_DEPENDENCIES variable may
+$(b MODULES)
+      Modules are bash snippets.  The special $(b ZERKENV_DEPENDENCIES) variable may
       be used to declare dependencies on other modules (by name).  Modules  are
       loaded in dependency order so modules may refer to variables that are set
-      in the modules on which they  depend.  Additionally, the special environ-
-      variable ZERKENV_RESOLVING_DEPENDENCIES will be set during the dependency
+      in the modules on which they depend.  Additionally, the special  environ-
+      variable $(b ZERKENV_RESOLVING_DEPENDENCIES) will be set during the dependency
       resolution phase, and may be used as a guard to prevent sections from be-
       ing evaluated during this phase.
 
-EXAMPLES
-      $ # List modules loaded in the current shell environment:
-      $ $prog
+$(b EXAMPLES)
+      # List modules loaded in the current shell environment:
+      $prog
 
-      $ # List modules available in the local cache:
-      $ $prog -l
+      # List modules available in the local cache:
+      $prog -l
 
-      $ # List modules available in S3:
-      $ $prog -r
+      # List modules available in S3:
+      $prog -r
 
-      $ # Print the contents of modules foo, bar, and baz, without dependencies:
-      $ $prog foo bar baz
+      # Print the contents of modules foo, bar, and baz, without dependencies:
+      $prog foo bar baz
 
-      $ # Print the contents of modules foo, bar, baz, plus their dependencies:
-      $ $prog -d foo bar baz
+      # Print the contents of modules foo, bar, baz, plus their dependencies:
+      $prog -d foo bar baz
 
-      $ # Load modules foo, bar, and baz into current shell (bash):
-      $ . <($prog -d foo bar baz)
+      # Load modules foo, bar, and baz into current shell (bash):
+      . <($prog -d foo bar baz)
 
-      $ # Write module to local cache as mod1, depending on modules dep1 and dep2:
-      $ cat <<EOT | $prog -w mod1
-      - ZERKENV_DEPENDENCIES="dep1 dep2"
-      - export USERNAME=admin
-      - export PASSWORD=hunter2
-      - EOT
+      # Write module to local cache as mod1, depending on modules dep1 and dep2:
+      cat <<EOT | $prog -w mod1
+      ZERKENV_DEPENDENCIES="dep1 dep2"
+      export USERNAME=admin
+      export PASSWORD=hunter2
+      EOT
 EOF
 }
 
@@ -369,7 +387,7 @@ while getopts "cdhi:lruw:W:xX" o; do
   case "${o}" in
     c) opt_completions=true ; break ;;
     d) opt_resolve_deps=true ; break ;;
-    h) usage ; exit ;;
+    h) usage |less -r; exit ;;
     i) install $OPTARG; exit $? ;;
     l) ls_cache ; exit $? ;;
     r) ls_s3 ; exit $? ;;
