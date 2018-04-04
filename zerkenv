@@ -297,7 +297,7 @@ ls_cache() {
 ls_loaded()   { echo "$ZERKENV_MODULES" |grep . |sort -u ; }
 cache_file()  { echo "$ZERKENV_DIR/$1.sh.asc" ; }
 s3_file()     { echo "s3://$ZERKENV_BUCKET/$1.sh" ; }
-encrypt()     { assert_gpg; gpg --batch -q -a -e --default-recipient $USER ; }
+encrypt()     { assert_gpg; gpg --batch -q -a -e --default-recipient-self ; }
 decrypt()     { assert_gpg; gpg --batch -q -d ; }
 not_private() { if ! [ ${1:0:1} = @ ]; then true; else false; fi ; }
 is_cached()   { [ -f "$(cache_file $1)" ] ; }

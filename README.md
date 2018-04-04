@@ -16,6 +16,9 @@ First, make sure you have the following tools installed and configured:
 * [`gpg`][gpg] &mdash; you'll probably want to make sure `gpg-agent` is
   configured correctly, too.
 
+> If you're using Mac OS X, there may be some additional setup to do -- see
+> [Troubleshooting - OS X](#osx) below.
+
 Then, download the [`zerkenv`][zerkenv] script to a directory in your `PATH`.
 
 ```bash
@@ -235,9 +238,30 @@ if [ -z "$ZERKENV_RESOLVING_DEPENDENCIES" ]; then
 fi
 ```
 
+## Troubleshooting
+
+### OS X
+
+#### `envsubst` not installed by default
+
+Zerkenv relies on the `envsubst` program from the `gettext` package, which is
+not installed by default on some versions of OS X. If you do not have `envsubst`
+available, see [this StackOverflow question][osx-gettext-so] about installing
+the `gettext` package on OS X. There is a package available via Homebrew.
+
+#### `gpg` and `gpg-agent` issues
+
+You might run into issues where `gpg-agent` cannot ask for your GPG passphrase
+out of the box because it is not configured to know how to do that. It needs a
+GUI program like `pinentry` (which is not installed by default on some versions
+of OS X) to ask you for your passphrase.
+
+You may find [this guide][osx-gpg-agent-pinentry] to setting up `gpg`,
+`gpg-agent`, and `pinentry-mac` useful if you are experiencing problems.
+
 ## License
 
-Copyright © 2017 Adzerk
+Copyright © 2017-2018 Adzerk
 
 Distributed under the Eclipse Public License version 1.0.
 
@@ -245,3 +269,5 @@ Distributed under the Eclipse Public License version 1.0.
 [gpg]: https://www.gnupg.org/
 [zerkenv]: https://raw.githubusercontent.com/adzerk-oss/zerkenv/master/zerkenv
 [bass]: https://github.com/edc/bass
+[osx-gettext-so]: https://stackoverflow.com/questions/14940383/how-to-install-gettext-on-macos-x
+[osx-gpg-agent-pinentry]: https://www.binarybabel.org/2017/03/10/setting-up-pin-entry-for-gpg-under-macos/
