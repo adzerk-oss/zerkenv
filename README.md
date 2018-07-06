@@ -46,12 +46,12 @@ export ZERKENV_DIR=$HOME/.config/zerkenv  # optional: default is ~/.zerkenv
 
 #### Fish
 
-Zerkenv works with Fish shell provided that you have [`bass`] installed. This is
+Zerkenv works with Fish shell provided that you have [bass] installed. This is
 necessary in order to source Bash scripts that set environment variables in the
 Bash subprocess, and have those changes reflected in the Fish shell.
 
-After installing [`bass`], add the following to your
-`~/.config/fish/config.fish` file:
+After installing [bass], add the following to your `~/.config/fish/config.fish`
+file:
 
 ```fish
 set -gx ZERKENV_BUCKET my-zerkenv-modules  # set this to your s3 bucket name
