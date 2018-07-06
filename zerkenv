@@ -466,7 +466,10 @@ $name() {
   if $newshell; then
     eval "( $name $* ; exec $BASH )"
   else
-    . <(colors=true $prog -d "$@")
+    local ZERKENV_TEMPFILE=$(mktemp)
+    colors=true $prog -d "$@" > $ZERKENV_TEMPFILE
+    . $ZERKENV_TEMPFILE
+    rm $ZERKENV_TEMPFILE
   fi
 }
 _$prog() {
