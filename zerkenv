@@ -453,10 +453,11 @@ install_bash() {
   cat <<'EOT' |envsubst '$prog $name'
 $name() {
   local OPTIND OPTARG o newshell=false
-  while getopts "hn" o; do
+  while getopts "hnv" o; do
     case "${o}" in
       h) echo "USAGE: $name [-hn] <module>..." ; return ;;
       n) newshell=true ;;
+      v) set -xf ;;
       ?) return 1 ;;
     esac
   done
@@ -465,7 +466,10 @@ $name() {
   if $newshell; then
     eval "( $name $* ; exec $BASH )"
   else
-    . <(colors=true $prog -d "$@")
+    local ZERKENV_TEMPFILE=$(mktemp)
+    colors=true $prog -d "$@" > $ZERKENV_TEMPFILE
+    . $ZERKENV_TEMPFILE
+    rm $ZERKENV_TEMPFILE
   fi
 }
 _$prog() {
@@ -512,7 +516,7 @@ opt_update_cache=false
 opt_delete_cache=false
 opt_delete_s3=false
 
-while getopts "cdhi:lruw:W:x:X:" o; do
+while getopts "cdhi:lruw:W:x:X:v" o; do
   case "${o}" in
     c) opt_completions=true ; break ;;
     d) opt_resolve_deps=true ; break ;;
@@ -525,6 +529,7 @@ while getopts "cdhi:lruw:W:x:X:" o; do
     W) put_s3 $OPTARG ; exit $? ;;
     x) opt_delete_cache=true ; : $((OPTIND--)) ; break ;;
     X) opt_delete_s3=true ; : $((OPTIND--)) ; break ;;
+    v) set -xv ; break ;;
     ?) exit 1 ;;
   esac
 done
