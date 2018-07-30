@@ -6,7 +6,7 @@ $(b NAME)
       zerkenv - manage environment variables
 
 $(b SYNOPSIS)
-      $(b zerkenv) [$(b -hlr)]
+      $(b zerkenv) [$(b -hlRr)]
       $(b zerkenv -c) [$(i arg)...]
       $(b zerkenv -i) $(i shell) [$(i name)]
       $(b zerkenv -w) $(i module)
@@ -22,14 +22,18 @@ $(b DESCRIPTION)
       vironment variable.  Downloaded  modules are cached in the local repo and
       written to stdout, suitable for evaluation in a shell.
 
-      There are two types of modules:
+      There are three types of modules:
 
           · $(b Shared)  —  may be stored in S3
           · $(b Private) —  only stored in the local cache
+          · $(b Assumed) —  temporary assumed role credentials
 
       Private module names start with the $(b @) character. Private modules are used
       to store user credentials (eg. the credentials used to access the zerkenv
       bucket itself).
+
+      Assumed module names are of the form $(b %)$(i name) — the $(b %) character  followed by
+      the role's name.
 
 $(b OPTIONS)
       $(b -c) $(i arg)...
@@ -45,6 +49,8 @@ $(b OPTIONS)
             argument may be given to specify the name of the zerkload function.
 
       $(b -l)    List modules available in the local cache directory.
+
+      $(b -R)    List roles available for STS assume-role.
 
       $(b -r)    List modules available in S3.
 
@@ -173,6 +179,9 @@ $(b EXAMPLES)
             # load modules foo, bar, and baz into current shell (bash)
             . <(zerkenv -d foo bar baz)
 
+            # assume role foo and load credentials into current shell (bash)
+            . <(zerkenv -u %foo)
+
             # write module to local cache as mod1, depending on dep1 and dep2
             cat <<EOT | zerkenv -w mod1
             ZERKENV_DEPENDENCIES='dep1 dep2'
@@ -288,6 +297,10 @@ ls_s3() {
     |sort
 }
 
+ls_roles() {
+  aws iam list-roles |jt Roles [ RoleName % ] |sort |sed 's/^/%/'
+}
+
 ls_cache() {
   find "$ZERKENV_DIR" -type f -name '*.sh.asc' \
     |sed "s@^$ZERKENV_DIR/@@" \
@@ -317,15 +330,28 @@ get_cache() {
 }
 
 get_s3() {
-  local src
-  assert_s3
-  if not_private $1; then
-    src=$(aws s3 cp "$(s3_file $1)" - --region $ZERKENV_REGION)
-    if [ -n "$src" ]; then
-      echo "$src" |put_cache $1
-    else
-      echo $1 >> "$ZERKENV_FAILS"
+  local src role
+  if [ "${1:0:1}" = % ]; then
+    role=$(aws iam get-role --role-name "${1:1}" \
+      |jt Role [ Arn % ] [ MaxSessionDuration % ] \
+      |awk -F\\t '{print "--role-arn " $1 " --duration-seconds " $2}')
+    if [ -n "$role" ]; then
+      src=$(aws sts assume-role $role --role-session-name $USER \
+        |jt Credentials [ AccessKeyId % ] [ SecretAccessKey % ] [ SessionToken % ] \
+        |awk -F\\t '{print "export AWS_ACCESS_KEY_ID=" $1 " AWS_SECRET_ACCESS_KEY=" $2 " AWS_SESSION_TOKEN=" $3}')
     fi
+  else
+    assert_s3
+    if not_private $1; then
+      src=$(aws s3 cp "$(s3_file $1)" - --region $ZERKENV_REGION)
+    else
+      return
+    fi
+  fi
+  if [ -n "$src" ]; then
+    echo "$src" |put_cache $1
+  else
+    echo $1 >> "$ZERKENV_FAILS"
   fi
 }
 
@@ -339,6 +365,9 @@ put_s3() {
     else
       warn "* $1 not found"
     fi
+  elif [ ${1:0:1} = % ]; then
+    warn "* $1 is an assumed role so cannot be uploaded to S3"
+    abort
   else
     warn "* $1 is private so cannot be uploaded to S3"
     abort
@@ -353,13 +382,14 @@ get_cache_or_s3() {
 }
 
 update_cache() {
-  local module found modules="$@" local_modules=$(ls_cache) remote_modules
-  remote_modules=$(ls_s3)
+  local module found modules="$@" local_modules=$(ls_cache)
+  local remote_modules=$(ls_s3) roles=$(ls_roles)
   if [ $# -eq 0 ]; then
     modules=$(sort <(echo "$remote_modules") <(echo "$local_modules") |uniq -d)
   fi
   for module in $modules; do
-    found=$(sort <(echo "$module") <(echo "$remote_modules") |uniq -d)
+    found=$(sort <(echo "$module") <(echo "$remote_modules") <(echo "$roles") \
+      |uniq -d)
     if ! not_private $module; then
       warn "* $module is private so cannot be updated from S3"
     elif [ -n "$found" ]; then
@@ -512,7 +542,7 @@ opt_update_cache=false
 opt_delete_cache=false
 opt_delete_s3=false
 
-while getopts "cdhi:lruw:W:x:X:" o; do
+while getopts "cdhi:lRruw:W:x:X:" o; do
   case "${o}" in
     c) opt_completions=true ; break ;;
     d) opt_resolve_deps=true ; break ;;
@@ -520,6 +550,7 @@ while getopts "cdhi:lruw:W:x:X:" o; do
     i) install $OPTARG ${!OPTIND}; exit $? ;;
     l) ls_cache ; exit $? ;;
     r) ls_s3 ; exit $? ;;
+    R) ls_roles ; exit $? ;;
     u) opt_update_cache=true ; break ;;
     w) put_cache $OPTARG ; exit $? ;;
     W) put_s3 $OPTARG ; exit $? ;;
