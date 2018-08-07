@@ -372,8 +372,9 @@ update_cache() {
 }
 
 rm_cache() {
-  local module file
-  for module in "$@"; do
+  local modules module file
+  modules="$@"
+  for module in "$modules"; do
     file=$(cache_file $module)
     if [ -f "$file" ]; then
       info "* $module"
@@ -385,9 +386,10 @@ rm_cache() {
 }
 
 rm_s3() {
-  local module file
+  local modules module file
+  modules="$@"
   assert_s3
-  for module in "$@"; do
+  for module in "$modules"; do
     file=$(s3_file $module)
     if aws s3 rm "$file" --region $ZERKENV_REGION; then
       info "* $module"
@@ -398,21 +400,26 @@ rm_s3() {
 }
 
 resolve_dependencies_impl() {
-  local deps module ZERKENV_DEPENDENCIES
+  local modules deps module ZERKENV_DEPENDENCIES MODULE_LIST
+  modules="$@"
 
-  for module in "$@"; do
-    . <(get_cache_or_s3 $module)
+  for module in $modules; do
+    ZERKENV_MODULE_TEMP=$(mktemp)
+    get_cache_or_s3 $module > $ZERKENV_MODULE_TEMP
+    source $ZERKENV_MODULE_TEMP
+    rm $ZERKENV_MODULE_TEMP
+
     for dep in $module $ZERKENV_DEPENDENCIES; do
       deps="$deps $dep $module"
     done
     ZERKENV_DEPENDENCIES=
   done
 
-  echo "$deps" |tsort
+  echo "$deps" |tsort | sort
 }
 
 resolve_dependencies() {
-  local i deps prev=$(for i in "$@"; do echo $i; done)
+  local i deps prev=$(for i in "$@"; do echo $i; done | sort)
 
   export ZERKENV_RESOLVING_DEPENDENCIES=true
   while true; do
