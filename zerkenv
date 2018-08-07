@@ -353,12 +353,12 @@ get_cache_or_s3() {
 }
 
 update_cache() {
-  local module found modules="$@" local_modules=$(ls_cache) remote_modules
+  local module found local_modules=$(ls_cache) remote_modules
   remote_modules=$(ls_s3)
   if [ $# -eq 0 ]; then
     modules=$(sort <(echo "$remote_modules") <(echo "$local_modules") |uniq -d)
   fi
-  for module in $modules; do
+  for module in "$@"; do
     found=$(sort <(echo "$module") <(echo "$remote_modules") |uniq -d)
     if ! not_private $module; then
       warn "* $module is private so cannot be updated from S3"
@@ -372,9 +372,9 @@ update_cache() {
 }
 
 rm_cache() {
-  local modules module file
-  modules="$@"
-  for module in "$modules"; do
+  local module file
+
+  for module in "$@"; do
     file=$(cache_file $module)
     if [ -f "$file" ]; then
       info "* $module"
@@ -386,10 +386,9 @@ rm_cache() {
 }
 
 rm_s3() {
-  local modules module file
-  modules="$@"
+  local module file
   assert_s3
-  for module in "$modules"; do
+  for module in "$@"; do
     file=$(s3_file $module)
     if aws s3 rm "$file" --region $ZERKENV_REGION; then
       info "* $module"
@@ -400,10 +399,9 @@ rm_s3() {
 }
 
 resolve_dependencies_impl() {
-  local modules deps module ZERKENV_DEPENDENCIES MODULE_LIST
-  modules="$@"
+  local deps module ZERKENV_DEPENDENCIES
 
-  for module in $modules; do
+  for module in "$@"; do
     ZERKENV_MODULE_TEMP=$(mktemp)
     get_cache_or_s3 $module > $ZERKENV_MODULE_TEMP
     source $ZERKENV_MODULE_TEMP
